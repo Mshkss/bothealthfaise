@@ -117,12 +117,6 @@ def now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def down_reason(status_code: Optional[int], err: Optional[str]) -> str:
-    if status_code is not None:
-        return f"HTTP: {status_code}"
-    return f"Ошибка: {err or 'unknown'}"
-
-
 def status_text() -> str:
     checked = (
         STATE.last_checked_at.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -169,26 +163,10 @@ async def monitor_loop(app: Application) -> None:
                     app,
                     f"Сайт ожил.\nURL: {TARGET_URL}\nHTTP: {status_code}\nВремя: {now_str()}",
                 )
-            if STATE.last_up is True and not is_up:
-                await notify_all(
-                    app,
-                    "Сайт упал.\n"
-                    f"URL: {TARGET_URL}\n"
-                    f"{down_reason(status_code, err)}\n"
-                    f"Время: {now_str()}",
-                )
             STATE.last_up = is_up
         else:
             logger.warning("Check error: %s", err)
             STATE.consecutive_successes = 0
-            if STATE.last_up is True:
-                await notify_all(
-                    app,
-                    "Сайт упал.\n"
-                    f"URL: {TARGET_URL}\n"
-                    f"{down_reason(status_code, err)}\n"
-                    f"Время: {now_str()}",
-                )
             STATE.last_up = False
 
         await asyncio.sleep(CHECK_INTERVAL_SEC)
@@ -201,7 +179,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Вы подписаны на уведомления.\n"
         f"Сайт считается ожившим только после {SUCCESS_STREAK_REQUIRED} "
         "успешных логинов подряд (HTTP 2xx).\n"
-        "Также бот пришлет уведомление, если сайт снова упадет.\n"
         "Команды: /status, /stop"
     )
 
