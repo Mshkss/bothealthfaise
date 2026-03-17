@@ -1,6 +1,7 @@
 # Grant Site Monitor Bot
 
-Серверный бот для Telegram, который проверяет сайт грантов и рассылает подписчикам уведомление `Сайт ожил`, когда `POST /api/v3/auth/sign-in` отвечает `2xx` или ошибкой авторизации (неверные креды).
+Серверный бот для Telegram, который проверяет сайт грантов и рассылает подписчикам уведомления `Сайт ожил` и `Сайт упал`.
+`Сайт ожил` отправляется только после `SUCCESS_STREAK_REQUIRED` успешных логинов подряд (HTTP `2xx`) на `POST /api/v3/auth/sign-in`.
 
 ## Как использовать
 
@@ -29,3 +30,19 @@
 docker compose logs -f
 docker compose down
 ```
+
+cd /opt/bothealthfaise
+docker compose exec grant-site-monitor-bot sh -lc "python - <<'PY'
+import sqlite3
+conn=sqlite3.connect('/data/bot.db')
+for row in conn.execute('select chat_id, created_at from subscribers order by created_at desc'):
+    print(row)
+conn.close()
+PY"
+
+docker compose exec grant-site-monitor-bot sh -lc "python - <<'PY'
+import sqlite3
+conn=sqlite3.connect('/data/bot.db')
+print(conn.execute('select count(*) from subscribers').fetchone()[0])
+conn.close()
+PY"
