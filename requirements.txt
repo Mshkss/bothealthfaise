@@ -1,2 +1,2 @@
-python-telegram-bot==22.1
-requests==2.32.5
+python-telegram-bot[socks]==22.1
+requests[socks]==2.32.5

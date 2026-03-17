@@ -20,19 +20,20 @@ logger = logging.getLogger(__name__)
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-TARGET_URL = os.getenv("TARGET_URL", "https://online.fasie.ru/api/v2/account").strip()
+TARGET_URL = os.getenv(
+    "TARGET_URL", "https://online.fasie.ru/api/v3/auth/sign-in"
+).strip()
+AUTH_LOGIN = os.getenv("AUTH_LOGIN", "").strip()
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "10"))
 REQUEST_TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT_SEC", "8"))
-DOWN_STATUSES = {
-    int(x.strip())
-    for x in os.getenv("DOWN_STATUSES", "404,504").split(",")
-    if x.strip()
-}
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required")
+if not AUTH_LOGIN or not AUTH_PASSWORD:
+    raise RuntimeError("AUTH_LOGIN and AUTH_PASSWORD are required")
 
 
 @dataclass
@@ -100,7 +101,11 @@ async def notify_all(app: Application, text: str) -> None:
 
 def check_site() -> tuple[Optional[int], Optional[str]]:
     try:
-        response = requests.get(TARGET_URL, timeout=REQUEST_TIMEOUT_SEC)
+        response = requests.post(
+            TARGET_URL,
+            json={"login": AUTH_LOGIN, "password": AUTH_PASSWORD},
+            timeout=REQUEST_TIMEOUT_SEC,
+        )
         return response.status_code, None
     except requests.RequestException as err:
         return None, str(err)
@@ -136,7 +141,7 @@ async def monitor_loop(app: Application) -> None:
         STATE.last_error = err
 
         if status_code is not None:
-            is_up = status_code not in DOWN_STATUSES
+            is_up = 200 <= status_code < 300
             logger.info("Check result: status=%s (up=%s)", status_code, is_up)
 
             if STATE.last_up is False and is_up:
@@ -157,7 +162,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     add_subscriber(chat_id)
     await update.message.reply_text(
         "Вы подписаны на уведомления.\n"
-        "Когда сайт снова начнет отвечать не 404/504, бот пришлет: 'Сайт ожил'.\n"
+        "Когда авторизация начнет отвечать кодом 2xx, бот пришлет: 'Сайт ожил'.\n"
         "Команды: /status, /stop"
     )
 
