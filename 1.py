@@ -251,11 +251,22 @@ async def monitor_loop(app: Application) -> None:
         overall_up = auth_up and account_up
 
         logger.info(
-            "Check result: auth_status=%s auth_up=%s, account_status=%s account_up=%s, overall_up=%s",
+            "Check result: "
+            "auth_status=%s auth_up=%s auth_streak=%s/%s auth_fail_streak=%s/%s, "
+            "account_status=%s account_up=%s account_streak=%s/%s account_fail_streak=%s/%s, "
+            "overall_up=%s",
             auth_status_code,
             auth_up,
+            auth_state.consecutive_successes,
+            SUCCESS_STREAK_REQUIRED,
+            auth_state.consecutive_failures,
+            FAILURE_STREAK_REQUIRED,
             account_status_code,
             account_up,
+            account_state.consecutive_successes,
+            ACCOUNT_SUCCESS_STREAK_REQUIRED,
+            account_state.consecutive_failures,
+            ACCOUNT_FAILURE_STREAK_REQUIRED,
             overall_up,
         )
 
