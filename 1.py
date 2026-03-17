@@ -29,9 +29,13 @@ REQUEST_TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT_SEC", "8"))
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 SUCCESS_STREAK_REQUIRED = int(os.getenv("SUCCESS_STREAK_REQUIRED", "5"))
 FAILURE_STREAK_REQUIRED = int(os.getenv("FAILURE_STREAK_REQUIRED", "3"))
-ACCOUNT_DOWN_STATUS = int(os.getenv("ACCOUNT_DOWN_STATUS", "503"))
 ACCOUNT_SUCCESS_STREAK_REQUIRED = int(os.getenv("ACCOUNT_SUCCESS_STREAK_REQUIRED", "5"))
 ACCOUNT_FAILURE_STREAK_REQUIRED = int(os.getenv("ACCOUNT_FAILURE_STREAK_REQUIRED", "3"))
+ACCOUNT_UNAUTHORIZED_OK_STATUSES = {
+    int(x.strip())
+    for x in os.getenv("ACCOUNT_UNAUTHORIZED_OK_STATUSES", "401,403").split(",")
+    if x.strip()
+}
 
 
 if not BOT_TOKEN:
@@ -148,11 +152,17 @@ def endpoint_status_text(
     )
     if endpoint.last_status_code is not None:
         state_label = "UP" if endpoint.last_up else "DOWN"
+        details = f"HTTP status: {endpoint.last_status_code}"
+        if endpoint.last_status_code >= 400 and endpoint.last_status_code not in ACCOUNT_UNAUTHORIZED_OK_STATUSES:
+            details = (
+                f"HTTP status: {endpoint.last_status_code}\n"
+                "Сервис личного кабинета не работает"
+            )
         return (
             f"{title}\n"
             f"URL: {url}\n"
             f"State: {state_label}\n"
-            f"HTTP status: {endpoint.last_status_code}\n"
+            f"{details}\n"
             f"Checked: {checked}"
         )
     return (
@@ -224,7 +234,11 @@ async def monitor_loop(app: Application) -> None:
         account_state.last_status_code = account_status_code
         account_state.last_error = account_err
         account_success = (
-            account_status_code is not None and account_status_code != ACCOUNT_DOWN_STATUS
+            account_status_code is not None
+            and (
+                (200 <= account_status_code < 300)
+                or (account_status_code in ACCOUNT_UNAUTHORIZED_OK_STATUSES)
+            )
         )
         account_up = evaluate_endpoint(
             account_state,
