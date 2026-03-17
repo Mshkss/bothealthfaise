@@ -25,10 +25,11 @@ TARGET_URL = os.getenv(
 ).strip()
 AUTH_LOGIN = os.getenv("AUTH_LOGIN", "").strip()
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
-CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "10"))
+CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "45"))
 REQUEST_TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT_SEC", "8"))
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
-SUCCESS_STREAK_REQUIRED = int(os.getenv("SUCCESS_STREAK_REQUIRED", "3"))
+SUCCESS_STREAK_REQUIRED = int(os.getenv("SUCCESS_STREAK_REQUIRED", "5"))
+FAILURE_STREAK_REQUIRED = int(os.getenv("FAILURE_STREAK_REQUIRED", "3"))
 
 
 if not BOT_TOKEN:
@@ -44,6 +45,7 @@ class MonitorState:
     last_checked_at: Optional[datetime] = None
     last_up: Optional[bool] = None
     consecutive_successes: int = 0
+    consecutive_failures: int = 0
 
 
 STATE = MonitorState()
@@ -130,6 +132,7 @@ def status_text() -> str:
             f"State: {state_label}\n"
             f"HTTP status: {STATE.last_status_code}\n"
             f"Success streak: {STATE.consecutive_successes}/{SUCCESS_STREAK_REQUIRED}\n"
+            f"Failure streak: {STATE.consecutive_failures}/{FAILURE_STREAK_REQUIRED}\n"
             f"Checked: {checked}"
         )
     return f"URL: {TARGET_URL}\nState: UNKNOWN\nLast error: {STATE.last_error}\nChecked: {checked}"
@@ -146,28 +149,42 @@ async def monitor_loop(app: Application) -> None:
         if status_code is not None:
             if 200 <= status_code < 300:
                 STATE.consecutive_successes += 1
+                STATE.consecutive_failures = 0
             else:
                 STATE.consecutive_successes = 0
-
-            is_up = STATE.consecutive_successes >= SUCCESS_STREAK_REQUIRED
-            logger.info(
-                "Check result: status=%s (streak=%s/%s, up=%s)",
-                status_code,
-                STATE.consecutive_successes,
-                SUCCESS_STREAK_REQUIRED,
-                is_up,
-            )
-
-            if STATE.last_up is False and is_up:
-                await notify_all(
-                    app,
-                    f"Сайт ожил.\nURL: {TARGET_URL}\nHTTP: {status_code}\nВремя: {now_str()}",
-                )
-            STATE.last_up = is_up
+                STATE.consecutive_failures += 1
         else:
             logger.warning("Check error: %s", err)
             STATE.consecutive_successes = 0
-            STATE.last_up = False
+            STATE.consecutive_failures += 1
+
+        if STATE.last_up is True:
+            is_up = STATE.consecutive_failures < FAILURE_STREAK_REQUIRED
+        else:
+            is_up = STATE.consecutive_successes >= SUCCESS_STREAK_REQUIRED
+
+        logger.info(
+            "Check result: status=%s (success=%s/%s, failure=%s/%s, up=%s)",
+            status_code,
+            STATE.consecutive_successes,
+            SUCCESS_STREAK_REQUIRED,
+            STATE.consecutive_failures,
+            FAILURE_STREAK_REQUIRED,
+            is_up,
+        )
+
+        if STATE.last_up is False and is_up:
+            await notify_all(
+                app,
+                "Сайт ожил.\n"
+                "Проверка статуса сервиса авторизации ФСИ\n"
+                f"URL: {TARGET_URL}\n"
+                f"HTTP: {status_code}\n"
+                f"Время: {now_str()}\n"
+                "/stop - отписаться от рассылки",
+            )
+
+        STATE.last_up = is_up
 
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
@@ -179,6 +196,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Вы подписаны на уведомления.\n"
         f"Сайт считается ожившим только после {SUCCESS_STREAK_REQUIRED} "
         "успешных логинов подряд (HTTP 2xx).\n"
+        f"Сайт считается упавшим только после {FAILURE_STREAK_REQUIRED} "
+        "подряд неуспешных проверок.\n"
         "Команды: /status, /stop"
     )
 
