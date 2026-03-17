@@ -128,14 +128,19 @@ def status_text() -> str:
     if STATE.last_status_code is not None:
         state_label = "UP" if STATE.last_up else "DOWN"
         return (
+            "Проверка статуса сервиса авторизации ФСИ\n"
             f"URL: {TARGET_URL}\n"
             f"State: {state_label}\n"
             f"HTTP status: {STATE.last_status_code}\n"
-            f"Success streak: {STATE.consecutive_successes}/{SUCCESS_STREAK_REQUIRED}\n"
-            f"Failure streak: {STATE.consecutive_failures}/{FAILURE_STREAK_REQUIRED}\n"
             f"Checked: {checked}"
         )
-    return f"URL: {TARGET_URL}\nState: UNKNOWN\nLast error: {STATE.last_error}\nChecked: {checked}"
+    return (
+        "Проверка статуса сервиса авторизации ФСИ\n"
+        f"URL: {TARGET_URL}\n"
+        "State: UNKNOWN\n"
+        f"Last error: {STATE.last_error}\n"
+        f"Checked: {checked}"
+    )
 
 
 async def monitor_loop(app: Application) -> None:
@@ -179,7 +184,6 @@ async def monitor_loop(app: Application) -> None:
                 "Сайт ожил.\n"
                 "Проверка статуса сервиса авторизации ФСИ\n"
                 f"URL: {TARGET_URL}\n"
-                f"HTTP: {status_code}\n"
                 f"Время: {now_str()}\n"
                 "/stop - отписаться от рассылки",
             )
@@ -193,11 +197,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     add_subscriber(chat_id)
     await update.message.reply_text(
+        "Проверка статуса сервиса авторизации ФСИ\n"
         "Вы подписаны на уведомления.\n"
-        f"Сайт считается ожившим только после {SUCCESS_STREAK_REQUIRED} "
-        "успешных логинов подряд (HTTP 2xx).\n"
-        f"Сайт считается упавшим только после {FAILURE_STREAK_REQUIRED} "
-        "подряд неуспешных проверок.\n"
         "Команды: /status, /stop"
     )
 
@@ -205,7 +206,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     remove_subscriber(chat_id)
-    await update.message.reply_text("Подписка отключена.")
+    await update.message.reply_text(
+        "Проверка статуса сервиса авторизации ФСИ\nПодписка отключена."
+    )
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
