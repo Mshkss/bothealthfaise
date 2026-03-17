@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -24,18 +25,13 @@ TARGET_URL = os.getenv("TARGET_URL", "https://online.fasie.ru/api/v3/auth/sign-i
 ACCOUNT_URL = os.getenv("ACCOUNT_URL", "https://online.fasie.ru/api/v2/account").strip()
 AUTH_LOGIN = os.getenv("AUTH_LOGIN", "").strip()
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
+AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "ASFund.Auth.Iden").strip()
+ACCOUNT_EXPECTED_STATUS = int(os.getenv("ACCOUNT_EXPECTED_STATUS", "200"))
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "45"))
 REQUEST_TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT_SEC", "8"))
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 SUCCESS_STREAK_REQUIRED = int(os.getenv("SUCCESS_STREAK_REQUIRED", "5"))
 FAILURE_STREAK_REQUIRED = int(os.getenv("FAILURE_STREAK_REQUIRED", "3"))
-ACCOUNT_SUCCESS_STREAK_REQUIRED = int(os.getenv("ACCOUNT_SUCCESS_STREAK_REQUIRED", "5"))
-ACCOUNT_FAILURE_STREAK_REQUIRED = int(os.getenv("ACCOUNT_FAILURE_STREAK_REQUIRED", "3"))
-ACCOUNT_UNAUTHORIZED_OK_STATUSES = {
-    int(x.strip())
-    for x in os.getenv("ACCOUNT_UNAUTHORIZED_OK_STATUSES", "401,403").split(",")
-    if x.strip()
-}
 
 
 if not BOT_TOKEN:
@@ -116,24 +112,47 @@ async def notify_all(app: Application, text: str) -> None:
             logger.error("Failed to send to chat_id=%s: %s", chat_id, err)
 
 
-def check_auth() -> tuple[Optional[int], Optional[str], Optional[str]]:
+def extract_token(response_text: str) -> Optional[str]:
     try:
-        response = requests.post(
+        payload = json.loads(response_text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict):
+        for key in ("token", "accessToken", "access_token"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        data = payload.get("data")
+        if isinstance(data, dict):
+            for key in ("token", "accessToken", "access_token"):
+                value = data.get(key)
+                if isinstance(value, str) and value:
+                    return value
+    return None
+
+
+def check_auth_chain() -> tuple[Optional[int], Optional[int], Optional[str]]:
+    try:
+        auth_response = requests.post(
             TARGET_URL,
             json={"login": AUTH_LOGIN, "password": AUTH_PASSWORD},
             timeout=REQUEST_TIMEOUT_SEC,
         )
-        return response.status_code, None, response.text
-    except requests.RequestException as err:
-        return None, str(err), None
+        if not (200 <= auth_response.status_code < 300):
+            return auth_response.status_code, None, "sign-in failed"
 
+        token = extract_token(auth_response.text)
+        if not token:
+            return auth_response.status_code, None, "token not found in sign-in response"
 
-def check_account() -> tuple[Optional[int], Optional[str]]:
-    try:
-        response = requests.get(ACCOUNT_URL, timeout=REQUEST_TIMEOUT_SEC)
-        return response.status_code, None
+        account_response = requests.get(
+            ACCOUNT_URL,
+            headers={"Cookie": f"{AUTH_COOKIE_NAME}={token}"},
+            timeout=REQUEST_TIMEOUT_SEC,
+        )
+        return auth_response.status_code, account_response.status_code, None
     except requests.RequestException as err:
-        return None, str(err)
+        return None, None, str(err)
 
 
 def now_str() -> str:
@@ -152,17 +171,11 @@ def endpoint_status_text(
     )
     if endpoint.last_status_code is not None:
         state_label = "UP" if endpoint.last_up else "DOWN"
-        details = f"HTTP status: {endpoint.last_status_code}"
-        if endpoint.last_status_code >= 400 and endpoint.last_status_code not in ACCOUNT_UNAUTHORIZED_OK_STATUSES:
-            details = (
-                f"HTTP status: {endpoint.last_status_code}\n"
-                "Сервис личного кабинета не работает"
-            )
         return (
             f"{title}\n"
             f"URL: {url}\n"
             f"State: {state_label}\n"
-            f"{details}\n"
+            f"HTTP status: {endpoint.last_status_code}\n"
             f"Checked: {checked}"
         )
     return (
@@ -214,11 +227,13 @@ async def monitor_loop(app: Application) -> None:
         CHECK_INTERVAL_SEC,
     )
     while True:
-        auth_status_code, auth_err, _ = await asyncio.to_thread(check_auth)
+        auth_status_code, account_status_code, chain_err = await asyncio.to_thread(
+            check_auth_chain
+        )
         auth_state = STATE.auth
         auth_state.last_checked_at = datetime.now(timezone.utc)
         auth_state.last_status_code = auth_status_code
-        auth_state.last_error = auth_err
+        auth_state.last_error = chain_err
         auth_success = auth_status_code is not None and 200 <= auth_status_code < 300
         auth_up = evaluate_endpoint(
             auth_state,
@@ -228,23 +243,19 @@ async def monitor_loop(app: Application) -> None:
         )
         auth_state.last_up = auth_up
 
-        account_status_code, account_err = await asyncio.to_thread(check_account)
         account_state = STATE.account
         account_state.last_checked_at = datetime.now(timezone.utc)
         account_state.last_status_code = account_status_code
-        account_state.last_error = account_err
+        account_state.last_error = chain_err
         account_success = (
             account_status_code is not None
-            and (
-                (200 <= account_status_code < 300)
-                or (account_status_code in ACCOUNT_UNAUTHORIZED_OK_STATUSES)
-            )
+            and account_status_code == ACCOUNT_EXPECTED_STATUS
         )
         account_up = evaluate_endpoint(
             account_state,
             account_success,
-            ACCOUNT_SUCCESS_STREAK_REQUIRED,
-            ACCOUNT_FAILURE_STREAK_REQUIRED,
+            SUCCESS_STREAK_REQUIRED,
+            FAILURE_STREAK_REQUIRED,
         )
         account_state.last_up = account_up
 
@@ -264,9 +275,9 @@ async def monitor_loop(app: Application) -> None:
             account_status_code,
             account_up,
             account_state.consecutive_successes,
-            ACCOUNT_SUCCESS_STREAK_REQUIRED,
+            SUCCESS_STREAK_REQUIRED,
             account_state.consecutive_failures,
-            ACCOUNT_FAILURE_STREAK_REQUIRED,
+            FAILURE_STREAK_REQUIRED,
             overall_up,
         )
 
