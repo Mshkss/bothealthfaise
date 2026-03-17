@@ -1,0 +1,12 @@
+services:
+  grant-site-monitor-bot:
+    build: .
+    container_name: grant-site-monitor-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - bot_data:/data
+
+volumes:
+  bot_data:
