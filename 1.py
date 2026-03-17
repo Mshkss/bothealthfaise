@@ -20,9 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-TARGET_URL = os.getenv(
-    "TARGET_URL", "https://online.fasie.ru/api/v3/auth/sign-in"
-).strip()
+TARGET_URL = os.getenv("TARGET_URL", "https://online.fasie.ru/api/v3/auth/sign-in").strip()
+ACCOUNT_URL = os.getenv("ACCOUNT_URL", "https://online.fasie.ru/api/v2/account").strip()
 AUTH_LOGIN = os.getenv("AUTH_LOGIN", "").strip()
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "45"))
@@ -30,6 +29,9 @@ REQUEST_TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT_SEC", "8"))
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 SUCCESS_STREAK_REQUIRED = int(os.getenv("SUCCESS_STREAK_REQUIRED", "5"))
 FAILURE_STREAK_REQUIRED = int(os.getenv("FAILURE_STREAK_REQUIRED", "3"))
+ACCOUNT_DOWN_STATUS = int(os.getenv("ACCOUNT_DOWN_STATUS", "503"))
+ACCOUNT_SUCCESS_STREAK_REQUIRED = int(os.getenv("ACCOUNT_SUCCESS_STREAK_REQUIRED", "5"))
+ACCOUNT_FAILURE_STREAK_REQUIRED = int(os.getenv("ACCOUNT_FAILURE_STREAK_REQUIRED", "3"))
 
 
 if not BOT_TOKEN:
@@ -39,7 +41,7 @@ if not AUTH_LOGIN or not AUTH_PASSWORD:
 
 
 @dataclass
-class MonitorState:
+class EndpointState:
     last_status_code: Optional[int] = None
     last_error: Optional[str] = None
     last_checked_at: Optional[datetime] = None
@@ -48,7 +50,14 @@ class MonitorState:
     consecutive_failures: int = 0
 
 
-STATE = MonitorState()
+@dataclass
+class MonitorState:
+    auth: EndpointState
+    account: EndpointState
+    overall_up: Optional[bool] = None
+
+
+STATE = MonitorState(auth=EndpointState(), account=EndpointState())
 
 
 def init_db() -> None:
@@ -103,7 +112,7 @@ async def notify_all(app: Application, text: str) -> None:
             logger.error("Failed to send to chat_id=%s: %s", chat_id, err)
 
 
-def check_site() -> tuple[Optional[int], Optional[str], Optional[str]]:
+def check_auth() -> tuple[Optional[int], Optional[str], Optional[str]]:
     try:
         response = requests.post(
             TARGET_URL,
@@ -115,81 +124,139 @@ def check_site() -> tuple[Optional[int], Optional[str], Optional[str]]:
         return None, str(err), None
 
 
+def check_account() -> tuple[Optional[int], Optional[str]]:
+    try:
+        response = requests.get(ACCOUNT_URL, timeout=REQUEST_TIMEOUT_SEC)
+        return response.status_code, None
+    except requests.RequestException as err:
+        return None, str(err)
+
+
 def now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def status_text() -> str:
+def endpoint_status_text(
+    title: str,
+    url: str,
+    endpoint: EndpointState,
+) -> str:
     checked = (
-        STATE.last_checked_at.strftime("%Y-%m-%d %H:%M:%S UTC")
-        if STATE.last_checked_at
+        endpoint.last_checked_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        if endpoint.last_checked_at
         else "never"
     )
-    if STATE.last_status_code is not None:
-        state_label = "UP" if STATE.last_up else "DOWN"
+    if endpoint.last_status_code is not None:
+        state_label = "UP" if endpoint.last_up else "DOWN"
         return (
-            "Проверка статуса сервиса авторизации ФСИ\n"
-            f"URL: {TARGET_URL}\n"
+            f"{title}\n"
+            f"URL: {url}\n"
             f"State: {state_label}\n"
-            f"HTTP status: {STATE.last_status_code}\n"
+            f"HTTP status: {endpoint.last_status_code}\n"
             f"Checked: {checked}"
         )
     return (
-        "Проверка статуса сервиса авторизации ФСИ\n"
-        f"URL: {TARGET_URL}\n"
+        f"{title}\n"
+        f"URL: {url}\n"
         "State: UNKNOWN\n"
-        f"Last error: {STATE.last_error}\n"
+        f"Last error: {endpoint.last_error}\n"
         f"Checked: {checked}"
     )
 
 
+def status_text() -> str:
+    overall = "UNKNOWN"
+    if STATE.overall_up is True:
+        overall = "UP"
+    elif STATE.overall_up is False:
+        overall = "DOWN"
+    return (
+        "Проверка статуса сервиса авторизации ФСИ\n"
+        f"Overall state: {overall}\n\n"
+        f"{endpoint_status_text('Эндпоинт авторизации', TARGET_URL, STATE.auth)}\n\n"
+        f"{endpoint_status_text('Эндпоинт аккаунта', ACCOUNT_URL, STATE.account)}"
+    )
+
+
+def evaluate_endpoint(
+    endpoint: EndpointState,
+    success: bool,
+    success_required: int,
+    failure_required: int,
+) -> bool:
+    if success:
+        endpoint.consecutive_successes += 1
+        endpoint.consecutive_failures = 0
+    else:
+        endpoint.consecutive_successes = 0
+        endpoint.consecutive_failures += 1
+
+    if endpoint.last_up is True:
+        return endpoint.consecutive_failures < failure_required
+    return endpoint.consecutive_successes >= success_required
+
+
 async def monitor_loop(app: Application) -> None:
-    logger.info("Monitor started: url=%s, interval=%ss", TARGET_URL, CHECK_INTERVAL_SEC)
+    logger.info(
+        "Monitor started: auth_url=%s, account_url=%s, interval=%ss",
+        TARGET_URL,
+        ACCOUNT_URL,
+        CHECK_INTERVAL_SEC,
+    )
     while True:
-        status_code, err, _ = await asyncio.to_thread(check_site)
-        STATE.last_checked_at = datetime.now(timezone.utc)
-        STATE.last_status_code = status_code
-        STATE.last_error = err
+        auth_status_code, auth_err, _ = await asyncio.to_thread(check_auth)
+        auth_state = STATE.auth
+        auth_state.last_checked_at = datetime.now(timezone.utc)
+        auth_state.last_status_code = auth_status_code
+        auth_state.last_error = auth_err
+        auth_success = auth_status_code is not None and 200 <= auth_status_code < 300
+        auth_up = evaluate_endpoint(
+            auth_state,
+            auth_success,
+            SUCCESS_STREAK_REQUIRED,
+            FAILURE_STREAK_REQUIRED,
+        )
+        auth_state.last_up = auth_up
 
-        if status_code is not None:
-            if 200 <= status_code < 300:
-                STATE.consecutive_successes += 1
-                STATE.consecutive_failures = 0
-            else:
-                STATE.consecutive_successes = 0
-                STATE.consecutive_failures += 1
-        else:
-            logger.warning("Check error: %s", err)
-            STATE.consecutive_successes = 0
-            STATE.consecutive_failures += 1
+        account_status_code, account_err = await asyncio.to_thread(check_account)
+        account_state = STATE.account
+        account_state.last_checked_at = datetime.now(timezone.utc)
+        account_state.last_status_code = account_status_code
+        account_state.last_error = account_err
+        account_success = (
+            account_status_code is not None and account_status_code != ACCOUNT_DOWN_STATUS
+        )
+        account_up = evaluate_endpoint(
+            account_state,
+            account_success,
+            ACCOUNT_SUCCESS_STREAK_REQUIRED,
+            ACCOUNT_FAILURE_STREAK_REQUIRED,
+        )
+        account_state.last_up = account_up
 
-        if STATE.last_up is True:
-            is_up = STATE.consecutive_failures < FAILURE_STREAK_REQUIRED
-        else:
-            is_up = STATE.consecutive_successes >= SUCCESS_STREAK_REQUIRED
+        overall_up = auth_up and account_up
 
         logger.info(
-            "Check result: status=%s (success=%s/%s, failure=%s/%s, up=%s)",
-            status_code,
-            STATE.consecutive_successes,
-            SUCCESS_STREAK_REQUIRED,
-            STATE.consecutive_failures,
-            FAILURE_STREAK_REQUIRED,
-            is_up,
+            "Check result: auth_status=%s auth_up=%s, account_status=%s account_up=%s, overall_up=%s",
+            auth_status_code,
+            auth_up,
+            account_status_code,
+            account_up,
+            overall_up,
         )
 
-        if STATE.last_up is False and is_up:
+        if STATE.overall_up is False and overall_up:
             await notify_all(
                 app,
                 "Сайт ожил.\n"
                 "Проверка статуса сервиса авторизации ФСИ\n"
-                f"URL: {TARGET_URL}\n"
+                f"URL (auth): {TARGET_URL}\n"
+                f"URL (account): {ACCOUNT_URL}\n"
                 f"Время: {now_str()}\n"
                 "/stop - отписаться от рассылки",
             )
 
-        STATE.last_up = is_up
-
+        STATE.overall_up = overall_up
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
 
