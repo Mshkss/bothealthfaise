@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import os
 import sqlite3
@@ -25,7 +24,6 @@ TARGET_URL = os.getenv("TARGET_URL", "https://online.fasie.ru/api/v3/auth/sign-i
 ACCOUNT_URL = os.getenv("ACCOUNT_URL", "https://online.fasie.ru/api/v2/account").strip()
 AUTH_LOGIN = os.getenv("AUTH_LOGIN", "").strip()
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
-AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "ASFund.Auth.Iden").strip()
 ACCOUNT_EXPECTED_STATUS = int(os.getenv("ACCOUNT_EXPECTED_STATUS", "200"))
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "45"))
 REQUEST_TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT_SEC", "8"))
@@ -112,44 +110,22 @@ async def notify_all(app: Application, text: str) -> None:
             logger.error("Failed to send to chat_id=%s: %s", chat_id, err)
 
 
-def extract_token(response_text: str) -> Optional[str]:
-    try:
-        payload = json.loads(response_text)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(payload, dict):
-        for key in ("token", "accessToken", "access_token"):
-            value = payload.get(key)
-            if isinstance(value, str) and value:
-                return value
-        data = payload.get("data")
-        if isinstance(data, dict):
-            for key in ("token", "accessToken", "access_token"):
-                value = data.get(key)
-                if isinstance(value, str) and value:
-                    return value
-    return None
-
-
 def check_auth_chain() -> tuple[Optional[int], Optional[int], Optional[str]]:
     try:
-        auth_response = requests.post(
-            TARGET_URL,
-            json={"login": AUTH_LOGIN, "password": AUTH_PASSWORD},
-            timeout=REQUEST_TIMEOUT_SEC,
-        )
-        if not (200 <= auth_response.status_code < 300):
-            return auth_response.status_code, None, "sign-in failed"
+        with requests.Session() as session:
+            auth_response = session.post(
+                TARGET_URL,
+                json={"login": AUTH_LOGIN, "password": AUTH_PASSWORD},
+                timeout=REQUEST_TIMEOUT_SEC,
+            )
+            if not (200 <= auth_response.status_code < 300):
+                return auth_response.status_code, None, "sign-in failed"
 
-        token = extract_token(auth_response.text)
-        if not token:
-            return auth_response.status_code, None, "token not found in sign-in response"
-
-        account_response = requests.get(
-            ACCOUNT_URL,
-            headers={"Cookie": f"{AUTH_COOKIE_NAME}={token}"},
-            timeout=REQUEST_TIMEOUT_SEC,
-        )
+            # Account request uses cookies captured from sign-in response.
+            account_response = session.get(
+                ACCOUNT_URL,
+                timeout=REQUEST_TIMEOUT_SEC,
+            )
         return auth_response.status_code, account_response.status_code, None
     except requests.RequestException as err:
         return None, None, str(err)

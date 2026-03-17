@@ -4,8 +4,8 @@
 `Сайт ожил` отправляется только после `SUCCESS_STREAK_REQUIRED` успешных логинов подряд (по умолчанию 5).
 После того как сервис стал `UP`, обратно в `DOWN` он переводится только после `FAILURE_STREAK_REQUIRED` неуспешных проверок подряд (по умолчанию 3).
 Проверка идет по цепочке:
-1. `POST TARGET_URL` (`/api/v3/auth/sign-in`) и извлечение `token` из JSON ответа.
-2. `GET ACCOUNT_URL` (`/api/v2/account`) с Cookie `<AUTH_COOKIE_NAME>=<token>`.
+1. `POST TARGET_URL` (`/api/v3/auth/sign-in`) и получение авторизационных cookies.
+2. `GET ACCOUNT_URL` (`/api/v2/account`) в той же HTTP-сессии (cookies берутся автоматически из ответа sign-in).
 Проверка считается успешной только если второй шаг возвращает `ACCOUNT_EXPECTED_STATUS` (по умолчанию `200`).
 
 ## Как использовать
